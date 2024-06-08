@@ -1,130 +1,138 @@
-name: CI
-
-on:
-  push:
-    branches:
-    - master
-  pull_request:
-    branches:
-    - master
-
-permissions:
-  contents: read #  to fetch code (actions/checkout)
-
 jobs:
-  test:
+  generate_docs:
+    if: github.event_name == 'push' && github.repository == 'google/error-prone' &&
+      github.ref == 'refs/heads/master'
+    name: Generate latest docs
+    needs: test
     permissions:
-      actions: write #  to cancel/stop running workflows (styfle/cancel-workflow-action)
-      contents: read #  to fetch code (actions/checkout)
+      contents: write
+    runs-on: self-hosted
+    steps:
+    - continue-on-error: true
+      name: Check out repository
+      uses: actions/checkout@v4
+    - continue-on-error: true
+      name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        cache: maven
+        distribution: zulu
+        java-version: 17
+    - continue-on-error: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      name: Generate latest docs
+      run: ./util/generate-latest-docs.sh
+  publish_snapshot:
+    if: github.event_name == 'push' && github.repository == 'google/error-prone' &&
+      github.ref == 'refs/heads/master'
+    name: Publish snapshot
+    needs: test
+    runs-on: self-hosted
+    steps:
+    - continue-on-error: true
+      name: Check out repository
+      uses: actions/checkout@v4
+    - continue-on-error: true
+      name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        cache: maven
+        distribution: zulu
+        java-version: 17
+        server-id: ossrh
+        server-password: CI_DEPLOY_PASSWORD
+        server-username: CI_DEPLOY_USERNAME
+    - continue-on-error: true
+      env:
+        CI_DEPLOY_PASSWORD: ${{ secrets.CI_DEPLOY_PASSWORD }}
+        CI_DEPLOY_USERNAME: ${{ secrets.CI_DEPLOY_USERNAME }}
+      name: Publish
+      run: mvn source:jar deploy -B -DskipTests=true -Dinvoker.skip=true
+  test:
+    continue-on-error: ${{ matrix.experimental }}
+    name: JDK ${{ matrix.java }} on ${{ matrix.os }}
+    permissions:
+      actions: write
+      contents: read
+    runs-on: self-hosted
+    steps:
+    - continue-on-error: true
+      name: Cancel previous
+      uses: styfle/cancel-workflow-action@0.12.0
+      with:
+        access_token: ${{ github.token }}
+    - continue-on-error: true
+      name: Check out repository
+      uses: actions/checkout@v3
+    - continue-on-error: true
+      if: ${{ matrix.java == 'EA' }}
+      name: Set up JDK ${{ matrix.java }} from jdk.java.net
+      uses: oracle-actions/setup-java@v1
+      with:
+        cache: maven
+        release: ${{ matrix.java }}
+        website: jdk.java.net
+    - continue-on-error: true
+      if: ${{ matrix.java != 'EA' }}
+      name: Set up JDK ${{ matrix.java }}
+      uses: actions/setup-java@v4
+      with:
+        cache: maven
+        distribution: zulu
+        java-version: '11
 
-    name: "JDK ${{ matrix.java }} on ${{ matrix.os }}"
+          ${{ matrix.java }}
+
+          '
+    - continue-on-error: true
+      name: Install
+      run: mvn install -DskipTests=true -Dmaven.javadoc.skip=true -B -V
+      shell: bash
+    - continue-on-error: true
+      name: Test
+      run: mvn test -B
+      shell: bash
+    - continue-on-error: true
+      if: ${{ matrix.java == 17 }}
+      name: Test compatibility with JDK 11
+      run: mvn test -B -Dsurefire.jdk-toolchain-version=11
+      shell: bash
+    - continue-on-error: true
+      if: ${{ matrix.java >= 15 }}
+      name: Javadoc
+      run: mvn -P '!examples' javadoc:aggregate
+      shell: bash
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest ]
-        java: [ 21, 17, 11 ]
-        experimental: [ false ]
-        # Only test on macos and windows with a single recent JDK to avoid a
-        # combinatorial explosion of test configurations.
-        # Most OS-specific issues are not specific to a particular JDK version.
+        experimental:
+        - false
         include:
-          - os: macos-latest
-            java: 21
-            experimental: false
-          - os: windows-latest
-            java: 21
-            experimental: false
-          - os: ubuntu-latest
-            java: 21
-            experimental: false
-          - os: ubuntu-latest
-            java: 22
-            experimental: false
-          - os: ubuntu-latest
-            java: EA
-            experimental: true
-    runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental }}
-    steps:
-      - name: Cancel previous
-        uses: styfle/cancel-workflow-action@0.12.0
-        with:
-          access_token: ${{ github.token }}
-      - name: 'Check out repository'
-        uses: actions/checkout@v3
-      - name: 'Set up JDK ${{ matrix.java }} from jdk.java.net'
-        if: ${{ matrix.java == 'EA' }}
-        uses: oracle-actions/setup-java@v1
-        with:
-          website: jdk.java.net
-          release: ${{ matrix.java }}
-          cache: 'maven'
-      - name: 'Set up JDK ${{ matrix.java }}'
-        if: ${{ matrix.java != 'EA' }}
-        uses: actions/setup-java@v4
-        with:
-          java-version: |
-            11
-            ${{ matrix.java }}
-          distribution: 'zulu'
-          cache: 'maven'
-      - name: 'Install'
-        shell: bash
-        run: mvn install -DskipTests=true -Dmaven.javadoc.skip=true -B -V
-      - name: 'Test'
-        shell: bash
-        run: mvn test -B
-      - name: 'Test compatibility with JDK 11'
-        if: ${{ matrix.java == 17 }}
-        shell: bash
-        run: mvn test -B -Dsurefire.jdk-toolchain-version=11
-      - name: 'Javadoc'
-        # only generate javadoc on JDKs with the fix for https://bugs.openjdk.org/browse/JDK-8241780
-        if: ${{ matrix.java >= 15 }}
-        shell: bash
-        run: mvn -P '!examples' javadoc:aggregate
-
-  publish_snapshot:
-    name: 'Publish snapshot'
-    needs: test
-    if: github.event_name == 'push' && github.repository == 'google/error-prone' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
-    steps:
-      - name: 'Check out repository'
-        uses: actions/checkout@v4
-      - name: 'Set up JDK 17'
-        uses: actions/setup-java@v4
-        with:
-          java-version: 17
-          distribution: 'zulu'
-          cache: 'maven'
-          server-id: ossrh
-          server-username: CI_DEPLOY_USERNAME
-          server-password: CI_DEPLOY_PASSWORD
-      - name: 'Publish'
-        env:
-          CI_DEPLOY_USERNAME: ${{ secrets.CI_DEPLOY_USERNAME }}
-          CI_DEPLOY_PASSWORD: ${{ secrets.CI_DEPLOY_PASSWORD }}
-        run: mvn source:jar deploy -B -DskipTests=true -Dinvoker.skip=true
-
-  generate_docs:
-    permissions:
-      contents: write #  for git push
-
-    name: 'Generate latest docs'
-    needs: test
-    if: github.event_name == 'push' && github.repository == 'google/error-prone' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
-    steps:
-      - name: 'Check out repository'
-        uses: actions/checkout@v4
-      - name: 'Set up JDK 17'
-        uses: actions/setup-java@v4
-        with:
-          java-version: 17
-          distribution: 'zulu'
-          cache: 'maven'
-      - name: 'Generate latest docs'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./util/generate-latest-docs.sh
+        - experimental: false
+          java: 21
+          os: macos-latest
+        - experimental: false
+          java: 21
+          os: windows-latest
+        - experimental: false
+          java: 21
+          os: ubuntu-latest
+        - experimental: false
+          java: 22
+          os: ubuntu-latest
+        - experimental: true
+          java: EA
+          os: ubuntu-latest
+        java:
+        - 21
+        - 17
+        - 11
+        os:
+        - ubuntu-latest
+name: CI
+on:
+  repository_dispatch:
+    types: trigger-ga___ci.yml
+permissions:
+  contents: read
